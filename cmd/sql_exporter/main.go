@@ -3,8 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/fsnotify/fsnotify"
+	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -31,7 +34,7 @@ var (
 	metricsPath   = flag.String("web.metrics-path", "/metrics", "Path under which to expose metrics")
 	enableReload  = flag.Bool("web.enable-reload", false, "Enable reload collector data handler")
 	webConfigFile = flag.String("web.config.file", "", "[EXPERIMENTAL] TLS/BasicAuth configuration file path")
-	configFile    = flag.String("config.file", "sql_exporter.yml", "SQL Exporter configuration file path")
+	configFile    = flag.String("config.file", "/config/sql_exporter.yml", "SQL Exporter configuration file path")
 	logFormatJSON = flag.Bool("log.json", false, "Set log output format to JSON")
 	logLevel      = flag.String("log.level", "info", "Set log level")
 )
@@ -81,7 +84,50 @@ func main() {
 
 	exporter, err := sql_exporter.NewExporter(*configFile)
 	if err != nil {
-		klog.Fatalf("Error creating exporter: %s", err)
+		klog.Errorf("Error reloading config: %s", err)
+	}
+
+	// Expose refresh handler to reload query collections
+	if *enableReload {
+		// Create new watcher.
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer watcher.Close()
+
+		// Start listening for events.
+		go func() {
+			for {
+				select {
+				case event, ok := <-watcher.Events:
+					if !ok {
+						return
+					}
+					if event.Has(fsnotify.Write) {
+						klog.Warningf("Restart application due to modified config file:- %v", event.Name)
+						os.Exit(1)
+					}
+				case err, ok := <-watcher.Errors:
+					if !ok {
+						return
+					}
+					log.Println("error:", err)
+				}
+			}
+		}()
+
+		// Add a path.
+		err = watcher.Add(filepath.Dir(*configFile))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Don't block the main goroutine.
+		go func() {
+			// Wait for termination signal.
+			<-make(chan struct{})
+		}()
 	}
 
 	// Setup and start webserver.
@@ -91,11 +137,6 @@ func main() {
 	http.Handle(*metricsPath, promhttp.InstrumentMetricHandler(prometheus.DefaultRegisterer, ExporterHandlerFor(exporter)))
 	// Expose exporter metrics separately, for debugging purposes.
 	http.Handle("/sql_exporter_metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}))
-
-	// Expose refresh handler to reload query collections
-	if *enableReload {
-		http.HandleFunc("/reload", reloadCollectors(exporter))
-	}
 
 	klog.Warning("Listening on ", *listenAddress)
 

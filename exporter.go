@@ -27,6 +27,7 @@ type Exporter interface {
 	// Config returns the Exporter's underlying Config object.
 	Config() *config.Config
 	UpdateTarget([]Target)
+	UpdateCollectors([]*config.CollectorConfig)
 }
 
 type exporter struct {
@@ -161,4 +162,9 @@ func (e *exporter) Config() *config.Config {
 
 func (e *exporter) UpdateTarget(target []Target) {
 	e.targets = target
+}
+
+// UpdateCollectors 然而并没有什么卵用，虽然配置更新了但是还是不能热加载
+func (e *exporter) UpdateCollectors(collectors []*config.CollectorConfig) {
+	e.Config().Collectors = collectors
 }
