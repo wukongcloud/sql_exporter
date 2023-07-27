@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/fsnotify/fsnotify"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -96,16 +97,39 @@ func main() {
 		}
 		defer watcher.Close()
 
+		// start check content
+		go func() {
+			config, err := ioutil.ReadFile(*configFile)
+			if err != nil {
+				klog.Fatalf("RFailed to read config file: %v", err.Error())
+			}
+
+			ticker := time.NewTicker(1 * time.Second)
+			for range ticker.C {
+				newConfig, err := ioutil.ReadFile(*configFile)
+				if err != nil {
+					klog.Fatalf("RFailed to read config file: %v", err.Error())
+					continue
+				}
+
+				if string(config) != string(newConfig) {
+					klog.Warning("Restart application due to modified config file")
+					os.Exit(1)
+				}
+			}
+		}()
+
 		// Start listening for events.
 		go func() {
 			for {
+				// fsnotify event
 				select {
 				case event, ok := <-watcher.Events:
 					if !ok {
 						return
 					}
 					if event.Has(fsnotify.Write) {
-						klog.Warningf("Restart application due to modified config file:- %v", event.Name)
+						klog.Warningf("Restart application due to modified config file: %v", event.Name)
 						os.Exit(1)
 					}
 				case err, ok := <-watcher.Errors:
